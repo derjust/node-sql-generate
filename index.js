@@ -5,13 +5,14 @@ var fs = require('fs'),
 	sql = require('sql');
 
 var supportedDialects = {
-	mysql: 1,
+	mssql: 1,
+    mysql: 1,
 	pg: 1
 };
 
 /**
  * @param {Object} options
- * @param {String} options.dialect Either "mysql" or "pg"
+ * @param {String} options.dialect Either "mssql", "mysql" or "pg"
  * @param {String} options.dsn The DSN to use to connect to the database
  * @param {String} options.schema The name of the schema/database to extract from
  * @param {String} [options.indent] String to use for indentation of generated code, defaults to "\t"
@@ -36,19 +37,19 @@ module.exports = function(options, callback) {
 		return;
 	}
 	if (!options.dialect) {
-		var match = /^(mysql|postgres)/i.exec(options.dsn);
+		var match = /^(mssql|mysql|postgres)/i.exec(options.dsn);
 		if (!match) {
 			callback && callback(new Error('options.dialect is required'));
 			return;
 		}
 
-		options.dialect = match[1].toLowerCase() === 'mysql' ? 'mysql' : 'pg';
+		options.dialect = match[1].toLowerCase() === 'mssql' ? 'mysql' : 'pg';
 	}
 
 	options.dialect = options.dialect.toLowerCase();
 
 	if (!supportedDialects[options.dialect]) {
-		callback && callback(new Error('options.dialect must be either "mysql" or "pg"'));
+		callback && callback(new Error('options.dialect must be either "mssql" or "mysql" or "pg"'));
 		return;
 	}
 
@@ -66,7 +67,38 @@ module.exports = function(options, callback) {
 	function runQuery(query, callback) {
 		query = query.toQuery();
 		log('debug', 'QUERY: ' + query.text + ' :: ' + util.inspect(query.values));
+
 		switch (options.dialect) {
+            case 'mssql':
+                var ps = new db.PreparedStatement(client);
+                var params = {}
+                for(var i = 0; i < query.values.length; i++) {
+                    var value = query.values[i];
+                    var name = 'param' + (i+1);
+
+                    log('debug', 'BIND ' + name + '=' + value );
+
+                    ps.input(name, db.VarChar);
+                    params[name] = value;
+                }
+
+                ps.prepare(query.text, function(err, recordsets) {
+                    if (err)
+                        callback(err, null);
+
+                    ps.execute(params, function(err, recordset) {
+
+                        callback(err, recordset);
+
+                        //Important - a prepared statement consumes a connection
+                        ps.unprepare(function(err) {
+                            if (err)
+                                log('warn', err);
+                        });
+                    });
+                });
+                client.query(query.text, query.values, callback);
+                break;
 			case 'mysql':
 				client.query(query.text, query.values, callback);
 				break;
@@ -104,6 +136,11 @@ module.exports = function(options, callback) {
 			.from(tables);
 
 		switch (options.dialect) {
+            case 'mssql':
+                query = query
+                    .where(tables.schema.equals(options.schema))
+                    .and(tables.catalog.equals(options.database));
+                break;
 			case 'mysql':
 				query = query.where(tables.schema.equals(options.database));
 				break;
@@ -178,6 +215,44 @@ module.exports = function(options, callback) {
 		tables;
 
 	switch (options.dialect) {
+        case 'mssql':
+            var dsnPattern = /mssql:\/\/(.*):(.*)@([^:/]*)(:(\d*))?(\/(.*))?/;
+            var dsnParts = options.dsn.match(dsnPattern);
+            var mssqlconfig = {
+                user: dsnParts[1],
+                password: dsnParts[2],
+                server: dsnParts[3],
+                port: (dsnParts[4] !== undefined && dsnParts[4].indexOf(':') === 0) ? dsnParts[5] : 1433,
+                database: (dsnParts[6] !== undefined && dsnParts[6].indexOf('/') == 0) ? dsnParts[7] : options.database
+            };
+            client = db.connect(mssqlconfig);
+            options.database = mssqlconfig.database;
+            options.schema = options.schema || 'dbo';
+            sql.setDialect('mssql');
+            columns = sql.define({
+                name: 'COLUMNS',
+                schema: 'information_schema',
+                columns: [
+                    { name: 'TABLE_SCHEMA', property: 'tableSchema' },
+                    { name: 'TABLE_NAME', property: 'tableName' },
+                    { name: 'COLUMN_NAME', property: 'name' },
+                    { name: 'ORDINAL_POSITION', property: 'ordinalPosition' },
+                    { name: 'DATA_TYPE', property: 'type' },
+                    { name: 'CHARACTER_MAXIMUM_LENGTH', property: 'charLength' },
+                    { name: 'COLUMN_DEFAULT', property: 'defaultValue' },
+                    { name: 'IS_NULLABLE', property: 'isNullable' }
+                ]
+            });
+            tables = sql.define({
+                name: 'TABLES',
+                schema: 'information_schema',
+                columns: [
+                    { name: 'TABLE_NAME', property: 'name' },
+                    { name: 'TABLE_SCHEMA', property: 'schema' },
+                    { name: 'TABLE_CATALOG', property: 'catalog' }
+                ]
+            });
+            break;
 		case 'mysql':
 			client = db.createConnection(options.dsn);
 			options.database = options.database || client.config.database;
@@ -236,7 +311,6 @@ module.exports = function(options, callback) {
 			});
 			break;
 	}
-
 	if (!options.database) {
 		callback(new Error('options.database is required if it is not part of the DSN'));
 		return;
@@ -262,7 +336,14 @@ module.exports = function(options, callback) {
 
 	function connect(next) {
 		log('debug', 'Attempting connection with DSN "' + options.dsn + '"');
-		client.connect(next);
+        switch (options.dialect) {
+            case 'mssql':
+                client = new db.Request(client);
+                next();
+                break;
+            default:
+                client.connect(next);
+        }
 	}
 
 	function writeHead(next) {

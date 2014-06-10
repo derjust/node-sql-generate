@@ -6,7 +6,7 @@ var program = require('commander'),
 program
 	.version(require('../package.json').version)
 	.option('--dsn <dsn>', 'Connection string')
-	.option('-d, --dialect <dialect>', 'Specify the SQL dialect: "mysql" or "pg"')
+	.option('-d, --dialect <dialect>', 'Specify the SQL dialect: "mssql" or "mysql" or "pg"')
 	.option('-o, --output-file <file>', 'Output to this file; defaults to stdout')
 	.option('-i, --indent <token>', 'Indentation token; defaults to a TAB character', '\t')
 	.option('-D, --database <name>', 'Name of database to extract from')
@@ -24,6 +24,7 @@ program
 	.on('--help', function() {
 		console.log('Example DSN:');
 		console.log('  PostgreSQL: "postgres://user:password@host:5432/database"');
+        console.log('       MSSQL: "mssql://user:password@host:1433/database"');
 		console.log('       MySQL: "mysql://user:password@host:3306/database"');
 	})
 	.parse(process.argv);
